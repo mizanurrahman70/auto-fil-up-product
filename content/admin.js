@@ -8,7 +8,8 @@
 //                                                        the form never holds several blank rows/sections at once.
 //   Files & media                                     -> click "Add thumbnail image" / "Add gallery images" box, the media
 //                                                        library opens with <input type=file accept="image/*,...">, we set the file.
-// This script NEVER clicks Save / Publish.
+//   Publish                                           -> AUTO_PUBLISH decides. On, the publish button is clicked once every
+//                                                        field above is filled and clean; it is clicked exactly once.
 (() => {
   // Drop the previous copy's listener so a re-inject swaps the code instead of
   // leaving two listeners that both react to PDAF_FILL.
@@ -27,6 +28,20 @@
   const FILL_SLUG = false;           // false: never touch the product slug / URL slug
   const DEBUG = true;                // logs every write attempt to the page console
   const SET_SECTION_TITLE = false;   // false: keep the form's own section title ("Specifications"); true: use the source's ("Basic Information")
+  const AUTO_PUBLISH = true;         // click the form's publish button once every field is filled
+  const PUBLISH_ON_WARNINGS = true;  // false: any "warn" result stops the publish; true: only "error" does
+
+  // ---- timing ----
+  // The form re-renders on every keystroke, so each write needs a moment to
+  // settle. These are the only numbers that decide how long a full fill takes:
+  // drop them and the form starts dropping characters again.
+  const PACE = {
+    afterWrite: 70,      // settle time after writing one input/textarea
+    afterLabel: 60,      // the label write rebuilds the row, so the value waits a beat longer
+    afterClick: 1200,    // how long an added row/section may take to show up
+    dialog: 8000,        // how long the media library may take to close after the file is set
+    preview: 4000,       // how long the uploaded thumbnail may take to appear
+  };
 
   // Safety limits, so a form that stops responding can never spin forever.
   const POINTER_EVENTS = ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'];
@@ -35,9 +50,9 @@
   // helpers (this file is injected on its own, so it repeats a few of common.js)
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const norm = (text) => (text || '').replace(/\s+/g, ' ').trim();
-  const dbg = (...args) => { if (DEBUG) console.log('[pdaf specs]', ...args); };
+  const dbg = (...args) => { if (DEBUG) console.log('[pdaf]', ...args); };
 
-  async function waitFor(fn, timeout = 2500, step = 40) {
+  async function waitFor(fn, timeout = 2500, step = 25) {
     const start = Date.now();
     while (Date.now() - start < timeout) {
       const result = fn();
@@ -167,7 +182,7 @@
   // Clicks whatever findButton() returns and waits until isDone() reports success.
   // A bare click is not always enough, so later attempts replay the full pointer
   // sequence a real click produces.
-  async function clickUntilChanged(findButton, isDone, { attempts = 3, timeout = 2000 } = {}) {
+  async function clickUntilChanged(findButton, isDone, { attempts = 3, timeout = PACE.afterClick } = {}) {
     for (let attempt = 1; attempt <= attempts; attempt++) {
       const button = findButton();
       if (!button) return false;
@@ -262,11 +277,11 @@
   // Writes and confirms. The field getter runs again on every attempt, because the
   // element is replaced whenever the label (and therefore the id) changes.
   async function setVerified(getField, value) {
-    for (let attempt = 1; attempt <= 5; attempt++) {
+    for (let attempt = 1; attempt <= 4; attempt++) {
       const field = getField();
-      if (!field) { dbg(`attempt ${attempt}: field not found for`, value); await sleep(120); continue; }
+      if (!field) { dbg(`attempt ${attempt}: field not found for`, value); await sleep(PACE.afterWrite); continue; }
       forceValue(field, value);
-      await sleep(150);
+      await sleep(PACE.afterWrite);
       const readBack = getField();
       dbg(`attempt ${attempt}: wanted`, value, '| read back', readBack ? readBack.value : 'field gone');
       if (readBack && readBack.value === value) return true;
@@ -327,10 +342,10 @@
       const removed = await clickUntilChanged(
         () => buttonByText(present[present.length - 1], 'remove section'),
         () => sectionCount() < present.length,
-        { attempts: 2, timeout: 1500 }
+        { attempts: 2 }
       );
       if (!removed) { problems.push('could not remove a surplus specification section'); break; }
-      await sleep(60);
+      await sleep(40);
     }
 
     for (const [sectionIndex, source] of wantedSections.entries()) {
@@ -342,10 +357,10 @@
         const added = await clickUntilChanged(
           () => buttonByText(specSection, 'add specification section', { partial: true }),
           () => sectionCount() > sectionIndex,
-          { attempts: 2, timeout: 2000 }
+          { attempts: 2 }
         );
         if (!added) { problems.push('could not add another specification section'); break; }
-        await sleep(100);
+        await sleep(60);
       }
 
       const titleField = () => specTitleInput(groupElement());
@@ -362,10 +377,10 @@
         const removed = await clickUntilChanged(
           () => buttonByText(boxes[boxes.length - 1], 'remove'),
           () => specRowCount(groupElement()) < boxes.length,
-          { attempts: 2, timeout: 1500 }
+          { attempts: 2 }
         );
         if (!removed) { problems.push(`could not remove a surplus row in "${source.title}"`); break; }
-        await sleep(60);
+        await sleep(40);
       }
 
       // Rows: add one, fill it, move on.
@@ -380,14 +395,14 @@
             problems.push(`"+ Add row" stopped working at row ${rowIndex + 1} (form had ${before})`);
             break; // keep what was filled; the rest is reported as unchecked
           }
-          await sleep(120);
+          await sleep(PACE.afterLabel);
         }
 
         const wroteLabel = await setVerified(
           () => specRowFields(groupElement(), rowIndex, row.label).labelField,
           row.label
         );
-        await sleep(120); // the label write rebuilds the row before the value is set
+        await sleep(PACE.afterLabel); // the label write rebuilds the row before the value is set
         const wroteValue = await setVerified(
           () => specRowFields(groupElement(), rowIndex, row.label).valueField,
           row.value
@@ -473,18 +488,18 @@
     fileInput.dispatchEvent(new Event('change', { bubbles: true }));
 
     // The upload is done once the library closes, which removes the input.
-    if (!(await waitFor(() => !fileInput.isConnected, 12000, 100))) {
+    if (!(await waitFor(() => !fileInput.isConnected, PACE.dialog, 100))) {
       return {
         status: 'warn',
         blocked: true,
         message: 'file sent, but the media library is still open. Pick/confirm the uploaded image there.',
       };
     }
-    await sleep(500);
+    await sleep(300);
 
     // Closing the dialog does not prove the picture was accepted, so check that
     // the box now shows one thumbnail more than it did.
-    if (!(await waitFor(() => boxPreviews(kind).length > previewsBefore, 6000, 150))) {
+    if (!(await waitFor(() => boxPreviews(kind).length > previewsBefore, PACE.preview, 100))) {
       return {
         status: 'warn',
         blocked: false,
@@ -510,6 +525,72 @@
     return reports;
   }
 
+  // ---------- Publish ----------
+  // The form's publish control. "Draft" wording is ruled out first, so a
+  // "Save draft" button can never be mistaken for the real thing. The patterns
+  // run in order, so an exact "Publish" beats "Save & Publish", which beats a
+  // looser "Save something" wording.
+  const PUBLISH_LABELS = [
+    /^publish$/i,
+    /^(save|save\s+and|and)\s*&?\s*publish$/i,
+    /^(save|update|submit|create|add|done|apply)(\s|$)/i,
+  ];
+  const DRAFT_LABELS = /draft/i;
+
+  const controlLabel = (button) =>
+    norm(button.textContent) || button.value || button.getAttribute('aria-label') || '';
+
+  function publishCandidates() {
+    return [...document.querySelectorAll('button, [role="button"], input[type="submit"], input[type="button"]')]
+      .filter((button) =>
+        !button.disabled &&
+        button.getAttribute('aria-disabled') !== 'true' &&
+        button.getClientRects().length // visible; offsetParent is null for fixed/absolute boxes
+      )
+      .map((button) => ({ button, label: controlLabel(button).trim() }))
+      .filter((entry) => entry.label && !DRAFT_LABELS.test(entry.label));
+  }
+
+  function findPublishButton() {
+    const candidates = publishCandidates();
+    for (const pattern of PUBLISH_LABELS) {
+      const match = candidates.find((entry) => pattern.test(entry.label));
+      if (match) return match.button;
+    }
+    return null;
+  }
+
+  // A publish is only safe once the form is complete: errors always block, and
+  // warnings (brand not in the dropdown, image not confirmed) block too unless
+  // PUBLISH_ON_WARNINGS is turned on.
+  const publishBlockers = (results) =>
+    results.filter((result) => result.status === 'error' || (result.status === 'warn' && !PUBLISH_ON_WARNINGS));
+
+  // Returns { status, message }. The button is clicked EXACTLY ONCE: this is
+  // irreversible, so a failed confirmation is reported instead of retried.
+  async function publish() {
+    const button = findPublishButton();
+    const labels = publishCandidates().map((entry) => entry.label);
+    dbg('publish: candidates', JSON.stringify(labels));
+    if (!button) {
+      return { status: 'error', message: `no Publish/Save button found. Buttons on the page: ${labels.join(' | ') || 'none'}` };
+    }
+    const label = controlLabel(button).trim();
+    const settled = () => {
+      const current = findPublishButton();
+      return !current || current.disabled || current.getAttribute('aria-disabled') === 'true';
+    };
+
+    dbg('publish: clicking', label);
+    button.scrollIntoView({ block: 'center' });
+    await sleep(80);
+    button.click();
+
+    // A publish normally swaps the button for a spinner or navigates away.
+    if (await waitFor(settled, 6000, 100)) return { status: 'ok', message: `${label} clicked` };
+    return { status: 'warn', message: `${label} clicked, but the form is still open \u2014 check the result` };
+  }
+
   // ---------- On-page result panel ----------
   // The popup closes while the page keeps working, so the report is also shown
   // on the page itself.
@@ -518,6 +599,8 @@
 
   function showToast(results) {
     document.getElementById('pdaf-toast')?.remove();
+
+    const published = results.some((result) => result.field === 'Publish' && result.status === 'ok');
 
     const panel = document.createElement('div');
     panel.id = 'pdaf-toast';
@@ -529,7 +612,9 @@
     const header = document.createElement('div');
     header.style.cssText = 'display:flex;justify-content:space-between;gap:12px;font-weight:600;margin-bottom:4px';
     const title = document.createElement('span');
-    title.textContent = 'Product Data Auto Filler: review, then Save yourself';
+    title.textContent = published
+      ? 'Product Data Auto Filler: published'
+      : 'Product Data Auto Filler: check the form, then publish yourself';
     const close = document.createElement('button');
     close.type = 'button';
     close.textContent = '\u00d7';
@@ -546,7 +631,7 @@
     }
 
     document.body.append(panel);
-    setTimeout(() => panel.remove(), 45000); // do not stay in the way forever
+    setTimeout(() => panel.remove(), 120000); // do not stay in the way forever
   }
 
   // ---------- Main ----------
@@ -643,6 +728,27 @@
         }
       }
     } else record('Image', 'skip', 'none stored');
+
+    // Publish last, and only from a form that came out clean. Name and slug are
+    // left to you, so an empty name is checked here - a nameless product must
+    // never go out.
+    if (AUTO_PUBLISH) {
+      const blockers = publishBlockers(results);
+      if (!(document.getElementById('product-name')?.value || '').trim()) {
+        blockers.push({ field: 'Name', status: 'skip' });
+      }
+      if (blockers.length) {
+        const names = [...new Set(blockers.map((blocker) => blocker.field))].slice(0, 4).join(', ');
+        record('Publish', 'skip', `held back, check: ${names}`);
+      } else {
+        try {
+          const report = await publish();
+          record('Publish', report.status, report.message);
+        } catch (error) {
+          record('Publish', 'error', error.message);
+        }
+      }
+    } else record('Publish', 'skip', 'left for you to click');
 
     if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
     showToast(results);

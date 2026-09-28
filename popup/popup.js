@@ -207,13 +207,14 @@ function missingFields(data) {
   return missing;
 }
 
-// The fill is never final: the user reviews and saves by hand.
+// The fill ends with the form's publish click when every field came out clean.
 function reportFill(results) {
   showReport(results);
   const count = (status) => results.filter((result) => result.status === status).length;
+  const published = results.some((result) => result.field === 'Publish' && result.status === 'ok');
   const errors = count('error');
   const warnings = count('warn');
-  const tail = 'Review everything, then Save yourself.';
+  const tail = published ? 'Publish was clicked.' : 'Review everything, then publish yourself.';
   if (errors) say(`Filled with ${errors} error(s). ${tail}`, 'err');
   else if (warnings) say('Filled, with some items to check. ' + tail, 'warn');
   else say('Filled. ' + tail, 'ok');
