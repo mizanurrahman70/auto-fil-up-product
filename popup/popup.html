@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Product Data Auto Filler</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header class="head">
+    <img src="../icons/icon48.png" width="28" height="28" alt="">
+    <h1>Product Data Auto Filler</h1>
+  </header>
+
+  <div class="row">
+    <span class="muted">Source:</span>
+    <strong id="source">…</strong>
+  </div>
+  <button id="extract" class="primary">Extract Product</button>
+
+  <hr>
+
+  <div class="muted">Stored Product:</div>
+  <div class="stored">
+    <ul id="checks">
+      <li data-k="title"><span class="ic">✗</span> Title <em></em></li>
+      <li data-k="image"><span class="ic">✗</span> Image <em></em></li>
+      <li data-k="features"><span class="ic">✗</span> Features <em></em></li>
+      <li data-k="description"><span class="ic">✗</span> Description <em></em></li>
+      <li data-k="specifications"><span class="ic">✗</span> Specifications <em></em></li>
+    </ul>
+    <a id="thumbLink" href="#" target="_blank" hidden><img id="thumb" alt=""></a>
+  </div>
+  <div id="storedMeta" class="muted small"></div>
+
+  <hr>
+
+  <div id="adminState" class="small"></div>
+  <button id="fill" class="primary">Auto Fill Product</button>
+  <div class="row">
+    <button id="clear">Clear Data</button>
+    <!-- image upload disabled for now (extract only)
+    <button id="attach" class="link" title="Runs only the thumbnail + gallery upload">Upload image only</button>
+    -->
+  </div>
+
+  <div id="msg" class="msg" hidden></div>
+  <ul id="report" class="report"></ul>
+
+  <script src="popup.js"></script>
+</body>
+</html>
