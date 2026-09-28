@@ -24,5 +24,6 @@
     "https://www.startech.com.bd/*",
     "https://www.ryans.com/*",
     "https://*.ryans.com/*"
-  ]
+  ],
+  "optional_host_permissions": ["*://*/*"]
 }

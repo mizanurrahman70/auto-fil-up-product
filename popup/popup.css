@@ -29,6 +29,7 @@ button.primary:hover:not(:disabled) { background: #0d5f59; }
 button.link { border: 0; background: none; color: #2563eb; padding: 4px; font-size: 12px; }
 button.link:hover:not(:disabled) { background: none; text-decoration: underline; }
 
+.note { margin: 2px 0 0; }
 .stored { display: flex; gap: 10px; align-items: flex-start; margin-top: 4px; }
 #checks { list-style: none; margin: 0; padding: 0; flex: 1; }
 #checks li { padding: 1px 0; color: #9ca3af; }

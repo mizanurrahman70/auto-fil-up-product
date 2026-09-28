@@ -4,14 +4,22 @@ const DOWNLOAD_IMAGE = false;        // true = also save a copy to Downloads/pro
 const AUTO_UPLOAD_IMAGE = true;      // let the page script push the image into the media library
 const ADMIN_FORM_MARKERS = ['#product-name', '#product-slug']; // only on the admin product form
 
-// Sites the extension can read, matched against the tab's hostname.
+// Sites with an extractor written for their exact layout. Matched against the
+// tab's hostname; the first hit wins.
 const SOURCES = [
   { label: 'Technohouse', host: /(^|\.)startech\.com\.bd$/i, file: 'content/technohouse-a.js' },
   { label: 'Technohouse', host: /(^|\.)ryans\.com$/i, file: 'content/technohouse-b.js' },
 ];
 
+// Everything else falls back to the generic reader (JSON-LD / OpenGraph).
+const GENERIC_SOURCE = { label: 'Generic reader', host: /./, file: 'content/generic.js' };
+
+// The generic reader is far more accurate on a site that has its own extractor,
+// so it is only reached when no specific site matches.
+const sourceFor = (hostname) => SOURCES.find((source) => source.host.test(hostname)) || GENERIC_SOURCE;
+
 const $ = (id) => document.getElementById(id);
-const state = { tab: null, source: null, admin: false, product: null, busy: false };
+const state = { tab: null, source: null, admin: false, product: null, busy: false, permitted: false, origin: '' };
 
 // ---------- UI helpers ----------
 // The single message line under the buttons. kind: info | ok | warn | err
@@ -89,6 +97,25 @@ function render() {
 }
 
 // ---------- Tab and storage ----------
+// Reading a page (and fetching its image) only works on hosts the extension is
+// allowed to touch. The two source sites are in host_permissions; any other site
+// is asked for the first time it is used, so the extension never needs blanket
+// access to all of them at once.
+async function detectPermission(url) {
+  state.origin = '';
+  state.permitted = false;
+  try {
+    // Only web pages can be granted host access; chrome:// and the web store
+    // cannot, and asking for them would just throw a confusing error.
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return;
+    state.origin = parsed.origin + '/*';
+    state.permitted = await chrome.permissions.contains({ origins: [state.origin] });
+  } catch {
+    state.origin = ''; // no access to this tab's URL
+  }
+}
+
 // Is the active tab the admin product form?
 async function detectAdmin() {
   try {
@@ -226,10 +253,28 @@ function onExtract() {
     busyMessage: 'Extracting\u2026',
     failurePrefix: 'Extract failed',
     guard: () => {
-      if (!state.source) { say('Open a Technohouse product page first.', 'err'); return false; }
+      if (!state.source) { say('Open a product page first.', 'err'); return false; }
       return true;
     },
     work: async () => {
+      const notes = [];
+
+      // A new site is asked for access once, so its image can be read. The
+      // request has to be the first thing in the click, before any await, or the
+      // browser treats the click as spent. It is not fatal: activeTab already
+      // allows reading the page, so only the image is at risk.
+      if (!state.permitted && state.origin) {
+        try {
+          state.permitted = await chrome.permissions.request({ origins: [state.origin] });
+          if (!state.permitted) notes.push('site access declined, so the image was not read');
+        } catch (error) {
+          // Usually an extension still running the previous manifest.
+          notes.push('no site access (' + error.message + ') - reload the extension to fix it');
+        }
+        render();
+      }
+      if (!state.origin) throw new Error('this kind of page cannot be read by an extension');
+
       await injectScript(['content/common.js', state.source.file]);
       const { data } = await sendToPage({ type: 'PDAF_EXTRACT' });
       if (!data.title) throw new Error('could not find the product title. Is this a product page?');
@@ -238,24 +283,32 @@ function onExtract() {
       await chrome.storage.local.set({ [STORAGE_KEY]: product });
       state.product = product;
 
-      // The image is fetched by the browser, so it needs no page permissions.
-      const download = await downloadImage(product);
-      if (download) {
-        showReport([{
-          field: 'Image',
-          status: download.ok ? 'ok' : 'warn',
-          message: download.ok
-            ? 'downloaded to Downloads/product-images, kept as a hand-upload fallback'
-            : 'could not download the image: ' + download.error,
-        }]);
+      // The image is fetched by the browser from the popup, which needs the host
+      // permission - without it the fetch is blocked before it starts.
+      if (!product.image) {
+        // nothing to fetch
+      } else if (!state.permitted) {
+        notes.push('the image needs site access, so it was skipped - open it from the source page');
+      } else {
+        const download = await downloadImage(product);
+        if (download) {
+          showReport([{
+            field: 'Image',
+            status: download.ok ? 'ok' : 'warn',
+            message: download.ok
+              ? 'downloaded to Downloads/product-images, kept as a hand-upload fallback'
+              : 'could not download the image: ' + download.error,
+          }]);
+        }
       }
 
       const missing = missingFields(data);
+      const problems = [...missing.map((field) => 'no ' + field), ...notes];
       say(
-        missing.length
-          ? `Extracted and stored, but nothing found for: ${missing.join(', ')}.`
+        problems.length
+          ? 'Extracted and stored, but ' + problems.join('; ') + '.'
           : 'Product extracted and stored.',
-        missing.length ? 'warn' : 'ok'
+        problems.length ? 'warn' : 'ok'
       );
     },
   });
@@ -323,9 +376,8 @@ function onClear() {
   state.tab = tab;
   let hostname = '';
   try { hostname = new URL(tab.url).hostname; } catch { /* no access to this tab */ }
-  state.source = SOURCES.find((source) => source.host.test(hostname)) || null;
-  $('source').textContent = state.source ? state.source.label : 'not a Technohouse page';
+  state.source = sourceFor(hostname);
 
-  await Promise.all([detectAdmin(), loadStored()]);
+  await Promise.all([detectAdmin(), detectPermission(tab.url), loadStored()]);
   render();
 })();
