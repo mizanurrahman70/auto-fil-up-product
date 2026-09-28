@@ -1,6 +1,6 @@
 // ---- settings ----
 const STORAGE_KEY = 'pdafProduct';   // the extracted product, kept between page loads
-const DOWNLOAD_IMAGE = true;         // save the product image on extract, as a fallback for a failed upload
+const DOWNLOAD_IMAGE = false;        // true = also save a copy to Downloads/product-images on extract
 const AUTO_UPLOAD_IMAGE = true;      // let the page script push the image into the media library
 const ADMIN_FORM_MARKERS = ['#product-name', '#product-slug']; // only on the admin product form
 
@@ -131,7 +131,8 @@ async function fetchImagePayload(url) {
   }
 }
 
-// Saves the product image into the Downloads folder so it can be uploaded by hand.
+// Optional, only used when DOWNLOAD_IMAGE is turned back on: saves the product
+// image into the Downloads folder so it can be uploaded by hand.
 // chrome.downloads fetches it outside the page, so no CORS/permission problem.
 // Downloads/product-images/<product-name>.<ext>, keeping the source file type.
 function imageFileName(product) {

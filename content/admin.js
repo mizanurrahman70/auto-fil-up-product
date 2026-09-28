@@ -416,7 +416,7 @@
   }
 
   // ---------- Image upload through the media library ----------
-  // The popup downloads the picture and hands it over as a data URL; here it is
+  // The popup fetches the picture and hands it over as a data URL; here it is
   // turned back into a File and pushed through the media library into the
   // thumbnail box and then the gallery box.
   const imageFileInputs = () =>
@@ -662,6 +662,23 @@
       try { await work(); } catch (error) { record(field, 'error', error.message); }
     };
 
+    // Image first: the media library is a modal, so it is opened while the rest
+    // of the form is untouched and is fully closed again before the fields are
+    // written and before Publish is clicked.
+    // The popup fetches the picture; this script pushes it through the library,
+    // so the same one lands in the thumbnail box and then the gallery box.
+    if (product.image) {
+      if (!image) {
+        record('Image', 'warn', 'the extension could not read the image (the site may be outside its host permissions) \u2014 open it on the source page and upload it by hand');
+      } else {
+        try {
+          (await uploadImages(image)).forEach((result) => record(result.field, result.status, result.message));
+        } catch (error) {
+          record('Image', 'error', error.message);
+        }
+      }
+    } else record('Image', 'skip', 'none stored');
+
     // Name and slug are yours to write: the extension never touches them.
     if (FILL_NAME && product.title) {
       await step('Name', async () => {
@@ -714,20 +731,6 @@
         record('Specifications', 'warn', `${checked - mismatched.length}/${checked} rows verified. Check: ${notes}`);
       });
     } else record('Specifications', 'skip', 'none stored');
-
-    // Image: the popup fetches it and this script pushes it through the media
-    // library, so the same picture lands in the thumbnail and the gallery box.
-    if (product.image) {
-      if (!image) {
-        record('Image', 'warn', 'the extension could not read the image. It is in Downloads/product-images, upload it by hand');
-      } else {
-        try {
-          (await uploadImages(image)).forEach((result) => record(result.field, result.status, result.message));
-        } catch (error) {
-          record('Image', 'error', error.message);
-        }
-      }
-    } else record('Image', 'skip', 'none stored');
 
     // Publish last, and only from a form that came out clean. Name and slug are
     // left to you, so an empty name is checked here - a nameless product must
