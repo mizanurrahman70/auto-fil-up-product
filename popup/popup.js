@@ -1,7 +1,7 @@
 // ---- settings ----
 const STORAGE_KEY = 'pdafProduct';   // the extracted product, kept between page loads
-const DOWNLOAD_IMAGE = true;         // save the product image on extract, so you can upload it by hand
-const AUTO_UPLOAD_IMAGE = false;     // true = let the page script push the image into the media library
+const DOWNLOAD_IMAGE = true;         // save the product image on extract, as a fallback for a failed upload
+const AUTO_UPLOAD_IMAGE = true;      // let the page script push the image into the media library
 const ADMIN_FORM_MARKERS = ['#product-name', '#product-slug']; // only on the admin product form
 
 // Sites the extension can read, matched against the tab's hostname.
@@ -85,7 +85,7 @@ function render() {
   $('extract').disabled = state.busy || !state.source;
   $('fill').disabled = state.busy || !state.admin || !product;
   $('clear').disabled = state.busy || !product;
-  if ($('attach')) $('attach').disabled = state.busy || !state.admin || !product || !product.image;
+  $('attach').disabled = state.busy || !state.admin || !product || !product.image;
 }
 
 // ---------- Tab and storage ----------
@@ -109,19 +109,23 @@ async function loadStored() {
 }
 
 // The image as a data URL; only needed when the page script uploads it itself.
+// The popup has host permissions for the source sites, so this fetch is not
+// CORS-limited. Returns null on failure - the download already made at extract
+// time stays available for a hand upload.
 async function fetchImagePayload(url) {
   try {
-    const response = await fetch(url);
+    const response = await fetch(url, { cache: 'no-store' });
     if (!response.ok) throw new Error('HTTP ' + response.status);
     const blob = await response.blob();
+    if (!/^image\//i.test(blob.type || '')) throw new Error('the server sent no image (' + (blob.type || 'no type') + ')');
     const dataUrl = await new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = () => resolve(reader.result);
       reader.onerror = () => reject(reader.error);
       reader.readAsDataURL(blob);
     });
-    const name = decodeURIComponent(new URL(url).pathname.split('/').pop() || 'product-image');
-    return { name, type: blob.type || 'image/jpeg', dataUrl };
+    const name = decodeURIComponent(new URL(url).pathname.split('/').pop() || '') || 'product-image';
+    return { name, type: blob.type, dataUrl };
   } catch {
     return null;
   }
@@ -239,7 +243,7 @@ function onExtract() {
           field: 'Image',
           status: download.ok ? 'ok' : 'warn',
           message: download.ok
-            ? 'downloaded to Downloads/product-images \u2014 upload it in the media library'
+            ? 'downloaded to Downloads/product-images, kept as a hand-upload fallback'
             : 'could not download the image: ' + download.error,
         }]);
       }
@@ -311,7 +315,7 @@ function onClear() {
   $('extract').addEventListener('click', onExtract);
   $('fill').addEventListener('click', onFill);
   $('clear').addEventListener('click', onClear);
-  if ($('attach')) $('attach').addEventListener('click', onAttach); // only used when AUTO_UPLOAD_IMAGE is on
+  $('attach').addEventListener('click', onAttach);   // re-runs just the thumbnail + gallery upload
 
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   state.tab = tab;

@@ -19,17 +19,14 @@
 
   // ---- switches ----
   // How much of the source specification to copy:
-  //   keep taking the next section until SPEC_TARGET_ROWS rows are filled,
-  //   but stop as soon as one section alone already has SPEC_MIN_SECTION_ROWS
-  //   rows or more - then no other section is copied.
-  const SPEC_TARGET_ROWS = 8;
-  const SPEC_MIN_SECTION_ROWS = 6;
-  const MAX_ROWS_PER_SECTION = 0;    // 0 = every row of each section
+  //   sections are taken in order until the total reaches SPEC_MAX_ROWS, and the
+  //   last one is cut short, so the form never gets more than that however big
+  //   the source sections are.
+  const SPEC_MAX_ROWS = 10;
   const FILL_NAME = false;           // false: never touch the product name/title
   const FILL_SLUG = false;           // false: never touch the product slug / URL slug
   const DEBUG = true;                // logs every write attempt to the page console
   const SET_SECTION_TITLE = false;   // false: keep the form's own section title ("Specifications"); true: use the source's ("Basic Information")
-  const AUTO_UPLOAD_IMAGE = false;   // image is extracted only; upload it manually. Set true to re-enable media-library upload.
 
   // Safety limits, so a form that stops responding can never spin forever.
   const POINTER_EVENTS = ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'];
@@ -278,24 +275,21 @@
   }
 
   // ---- which source sections to copy ----
-  // Sections are taken in order until SPEC_TARGET_ROWS rows are covered; a section
-  // that already has SPEC_MIN_SECTION_ROWS rows or more is used alone, and then no
-  // other section is copied.
+  // Sections are taken in order until SPEC_MAX_ROWS rows are covered. The section
+  // that crosses the limit is trimmed to the rows that still fit, so the total is
+  // never more than SPEC_MAX_ROWS.
   function selectSpecSections(sections) {
     const selected = [];
     let rows = 0;
     for (const candidate of sections || []) {
-      if (!candidate || !candidate.rows || !candidate.rows.length) continue;
-      selected.push(candidate);
-      rows += candidate.rows.length;
-      if (rows >= SPEC_TARGET_ROWS) break;                // target reached
-      if (candidate.rows.length >= SPEC_MIN_SECTION_ROWS) break; // this one section is enough
+      const wanted = (candidate && candidate.rows) || [];
+      if (!wanted.length) continue;
+      const room = SPEC_MAX_ROWS - rows;
+      selected.push({ ...candidate, rows: wanted.slice(0, room) });
+      rows += Math.min(wanted.length, room);
+      if (rows >= SPEC_MAX_ROWS) break;
     }
-    return selected.map((section) =>
-      MAX_ROWS_PER_SECTION
-        ? { ...section, rows: section.rows.slice(0, MAX_ROWS_PER_SECTION) }
-        : section
-    );
+    return selected;
   }
 
   // Reads the form back and reports which rows did not land.
@@ -407,8 +401,9 @@
   }
 
   // ---------- Image upload through the media library ----------
-  // Only used when AUTO_UPLOAD_IMAGE is turned on; otherwise the image is just
-  // downloaded to your computer and you upload it by hand.
+  // The popup downloads the picture and hands it over as a data URL; here it is
+  // turned back into a File and pushed through the media library into the
+  // thumbnail box and then the gallery box.
   const imageFileInputs = () =>
     [...document.querySelectorAll('input[type="file"]')].filter((input) => !/pdf/i.test(input.accept || ''));
 
@@ -426,6 +421,16 @@
     return wrapper && wrapper.querySelector('button[class*="aspect-square"]');
   }
 
+  // Thumbnails of the images a box already holds, used to confirm an upload
+  // really landed. The box is re-found on every call, because React rebuilds the
+  // whole field once the upload finishes.
+  function boxPreviews(kind) {
+    const box = findUploadBox(kind);
+    const wrapper = box && (box.closest('.space-y-2') || box.parentElement);
+    if (!wrapper) return [];
+    return [...wrapper.querySelectorAll('img')].filter((img) => img.getAttribute('src'));
+  }
+
   // dataUrl -> File, for handing the image to the media library's file input.
   function toFile(image) {
     const [header, base64] = image.dataUrl.split(',');
@@ -436,6 +441,8 @@
     return new File([bytes], image.name, { type });
   }
 
+  // Returns { status, blocked, message }. `blocked` is true only when the media
+  // library is still open, which is the one case that stops the gallery pass.
   async function uploadToBox(kind, image) {
     const box = findUploadBox(kind);
     if (!box) throw new Error(`"${kind}" upload box not found`);
@@ -443,6 +450,7 @@
     // Opening the library adds a fresh file input; that is how we know it appeared.
     const before = new Set(imageFileInputs());
     const newFileInput = () => imageFileInputs().find((input) => !before.has(input));
+    const previewsBefore = boxPreviews(kind).length;
     box.click();
 
     let fileInput = await waitFor(newFileInput, 2500);
@@ -465,25 +473,36 @@
     fileInput.dispatchEvent(new Event('change', { bubbles: true }));
 
     // The upload is done once the library closes, which removes the input.
-    if (await waitFor(() => !fileInput.isConnected, 12000, 100)) {
-      await sleep(500);
-      return { status: 'ok', message: `${image.name} uploaded` };
+    if (!(await waitFor(() => !fileInput.isConnected, 12000, 100))) {
+      return {
+        status: 'warn',
+        blocked: true,
+        message: 'file sent, but the media library is still open. Pick/confirm the uploaded image there.',
+      };
     }
-    return {
-      status: 'warn',
-      message: 'file sent, but the media library is still open. Pick/confirm the uploaded image there.',
-    };
+    await sleep(500);
+
+    // Closing the dialog does not prove the picture was accepted, so check that
+    // the box now shows one thumbnail more than it did.
+    if (!(await waitFor(() => boxPreviews(kind).length > previewsBefore, 6000, 150))) {
+      return {
+        status: 'warn',
+        blocked: false,
+        message: `${image.name} was sent, but no thumbnail appeared. Check the ${kind} box.`,
+      };
+    }
+    return { status: 'ok', blocked: false, message: `${image.name} uploaded` };
   }
 
-  // Thumbnail first, then gallery; stops early if the library is still open,
-  // because a second dialog cannot be stacked on the first one.
+  // Thumbnail first, then gallery; stops early only if the library is still
+  // open, because a second dialog cannot be stacked on the first one.
   async function uploadImages(image) {
     const reports = [];
     for (const [kind, label] of [['thumbnail', 'Thumbnail'], ['gallery', 'Gallery']]) {
       try {
         const report = await uploadToBox(kind, image);
         reports.push({ field: label, status: report.status, message: report.message });
-        if (report.status !== 'ok') break;
+        if (report.blocked) break;
       } catch (error) {
         reports.push({ field: label, status: 'error', message: error.message });
       }
@@ -541,7 +560,6 @@
     }
     if (msg.type === 'PDAF_ATTACH_IMAGE') {
       (async () => {
-        if (!AUTO_UPLOAD_IMAGE) return sendResponse({ ok: false, error: 'image auto-upload is disabled in admin.js' });
         if (!msg.image) return sendResponse({ ok: false, error: 'the extension could not download the image' });
         const results = await uploadImages(msg.image);
         showToast(results);
@@ -612,12 +630,12 @@
       });
     } else record('Specifications', 'skip', 'none stored');
 
-    // Image: downloaded to your computer on extract, but NOT filled (upload manually).
-    if (product.image && !AUTO_UPLOAD_IMAGE) {
-      record('Image', 'skip', 'not filled: the image was downloaded to Downloads/product-images, upload it yourself');
-    } else if (product.image) {
-      if (!image) record('Image', 'warn', 'the extension could not download the image');
-      else {
+    // Image: the popup fetches it and this script pushes it through the media
+    // library, so the same picture lands in the thumbnail and the gallery box.
+    if (product.image) {
+      if (!image) {
+        record('Image', 'warn', 'the extension could not read the image. It is in Downloads/product-images, upload it by hand');
+      } else {
         try {
           (await uploadImages(image)).forEach((result) => record(result.field, result.status, result.message));
         } catch (error) {
